@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ULTIMATE PROTOCOL: BOSS EDITION</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Press Start 2P', cursive; /* Fuente pixel art, si se carga */ }
+        canvas { display: block; }
+        #ui { 
+            position: absolute; top: 10px; left: 10px; color: #0f0; 
+            font-size: 14px; pointer-events: none; z-index: 10; text-shadow: 2px 2px #000;
+        }
+        #boss-health-bar {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            width: 80%; max-width: 400px; height: 15px; background-color: #333;
+            border: 2px solid #0ff; box-shadow: 0 0 10px #0ff; display: none; z-index: 10;
+        }
+        #boss-health {
+            height: 100%; width: 100%; background-color: #f00;
+            transition: width 0.1s ease-out;
+        }
+        .level-up, #final-victory-msg {
+            position: absolute; width: 100%; text-align: center; top: 40%;
+            color: #ff0; font-size: 40px; font-weight: bold; display: none;
+            z-index: 20; text-shadow: 0 0 20px yellow, 0 0 30px orange;
+        }
+        @keyframes glitch {
+            0% { transform: translate(0); clip-path: inset(0 0 0 0); }
+            20% { transform: translate(-10px, 5px); clip-path: inset(10% 0 80% 0); }
+            40% { transform: translate(10px, -5px); clip-path: inset(50% 0 30% 0); }
+            60% { transform: translate(-5px, 10px); background: #f00; }
+            80% { transform: translate(5px, -10px); clip-path: inset(20% 0 60% 0); }
+            100% { transform: translate(0); }
+        }
+        .death-screen {
+            animation: glitch 0.1s infinite;
+            background: #f00 !important;
+            filter: invert(1);
+        }
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap'); /* Fuente pixel-art */
+    </style>
+</head>
+<body id="mainBody">
+    <div id="ui">
+        NIVEL: <span id="lvl">1</span> | OBJETIVO: <span id="target">100</span><br>
+        BAJAS: <span id="score">0</span><br>
+        TIEMPO: <span id="timer">03:00</span>
+    </div>
+    <div id="boss-health-bar"><div id="boss-health"></div></div>
+    <div id="levelMsg" class="level-up">NIVEL SIGUIENTE</div>
+    <div id="final-victory-msg" class="level-up" style="display: none; color: lime;">¡SISTEMA SALVADO!</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const body = document.getElementById('mainBody');
+        const levelMsg = document.getElementById('levelMsg');
+        const finalVictoryMsg = document.getElementById('final-victory-msg');
+        const bossHealthBar = document.getElementById('boss-health-bar');
+        const bossHealth = document.getElementById('boss-health');
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let level = 1;
+        let score = 0;
+        const config = [
+            { target: 100, time: 180 }, // Nivel 1: 3 min
+            { target: 500, time: 300 }, // Nivel 2: 5 min
+            { target: 1000, time: 420, bossSpawn: 900 } // Nivel 3: 7 min, jefe en 900 kills
+        ];
+        
+        let timeLeft = config[0].time;
+        let gameOver = false;
+        let powerUpActive = false;
+        let player = { x: canvas.width / 2, y: canvas.height - 80, w: 40, h: 40 };
+        let bullets = [], enemies = [], powerUps = [], particles = [], bossProjectiles = [];
+        
+        let boss = null; // Objeto del jefe
+        let bossSpawned = false;
+
+        function playSound(freq, type, duration) {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function createExplosion(x, y, color, count) {
+            for(let i=0; i<count; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 15,
+                    vy: (Math.random() - 0.5) * 15,
+                    color: color, size: Math.random() * 5 + 2
+                });
+            }
+        }
+
+        function explode() {
+            if (gameOver) return;
+            gameOver = true;
+            body.classList.add('death-screen');
+            playSound(100, 'sawtooth', 2);
+            
+            setInterval(() => {
+                ctx.fillStyle = Math.random() > 0.5 ? '#fff' : '#f00';
+                ctx.fillRect(Math.random()*canvas.width, Math.random()*canvas.height, 50, 2);
+            }, 10);
+
+            setTimeout(() => {
+                document.body.innerHTML = "<div style='background:white; color:black; height:100vh; display:flex; align-items:center; justify-content:center; font-size:40px; font-weight:bold; flex-direction:column;'><span>ERROR CRÍTICO</span><span style='font-size:15px'>KERNEL_PANIC_0x00A</span></div>";
+                setTimeout(() => window.close(), 2000);
+            }, 1500);
+        }
+
+        function nextLevel() {
+            if (level >= 3) {
+                // Si matas al jefe, victoria final
+                if (boss && boss.health <= 0) {
+                    finalVictoryMsg.style.display = 'block';
+                    playSound(1200, 'square', 1); // Sonido de victoria final
+                    setTimeout(() => location.reload(), 3000); // Recargar para jugar de nuevo
+                }
+                return; // Esperar al jefe
+            }
+            playSound(880, 'sine', 0.5);
+            createExplosion(canvas.width/2, canvas.height/2, '#0ff', 100);
+
+            level++;
+            score = 0;
+            timeLeft = config[level-1].time;
+            bossSpawned = false; // Resetear para el siguiente nivel
+            bossHealthBar.style.display = 'none';
+
+            levelMsg.innerText = `NIVEL ${level}`;
+            levelMsg.style.display = 'block';
+            document.getElementById('lvl').innerText = level;
+            document.getElementById('target').innerText = config[level-1].target;
+            setTimeout(() => { levelMsg.style.display = 'none'; }, 2000);
+        }
+
+        const countdown = setInterval(() => {
+            if(gameOver) return;
+            timeLeft--;
+            let mins = Math.floor(timeLeft / 60);
+            let secs = timeLeft % 60;
+            document.getElementById('timer').innerText = `${mins}:${secs.toString().padStart(2,'0')}`;
+            if (timeLeft <= 0) {
+                if (score < config[level-1].target || (level === 3 && boss && boss.health > 0)) explode();
+                else nextLevel();
+            }
+        }, 1000);
+
+        window.addEventListener('touchmove', (e) => {
+            if(!gameOver) player.x = e.touches[0].clientX - player.w / 2;
+        });
+
+        // Generación de enemigos y PowerUps
+        setInterval(() => {
+            if(gameOver || (boss && boss.health > 0)) return; // No generar enemigos si el jefe está vivo
+            enemies.push({ 
+                x: Math.random() * (canvas.width - 30), y: -30, 
+                w: 30, h: 30, speed: 3 + (level * 1.5) 
+            });
+            if(Math.random() < 0.08) powerUps.push({ x: Math.random()*canvas.width, y: -20, w: 20, h: 20, speed: 3 });
+        }, 800 / level);
+
+        // Disparo del jugador
+        setInterval(() => {
+            if(gameOver) return;
+            bullets.push({ x: player.x + player.w/2 - 2, y: player.y, w: 4, h: 10, speed: 14 });
+            if(powerUpActive) {
+                bullets.push({ x: player.x - 5, y: player.y, w: 4, h: 10, speed: 14 });
+                bullets.push({ x: player.x + player.w + 5, y: player.y, w: 4, h: 10, speed: 14 });
+            }
+        }, 110);
+
+        // Disparo del jefe (si existe)
+        setInterval(() => {
+            if(gameOver || !boss || boss.health <= 0) return;
+            bossProjectiles.push({ x: boss.x + boss.w / 4, y: boss.y + boss.h, w: 10, h: 10, speed: 5 });
+            bossProjectiles.push({ x: boss.x + boss.w * 3 / 4, y: boss.y + boss.h, w: 10, h: 10, speed: 5 });
+        }, 500); // El jefe dispara cada 0.5 segundos
+
+        function update() {
+            if(gameOver) return;
+
+            // Lógica del jefe
+            if (level === 3 && score >= config[level-1].bossSpawn && !bossSpawned) {
+                boss = {
+                    x: canvas.width / 2 - 75, y: 50, w: 150, h: 100,
+                    health: 200, maxHealth: 200, speed: 2, dir: 1
+                };
+                bossSpawned = true;
+                bossHealthBar.style.display = 'block';
+            }
+
+            if (boss && boss.health > 0) {
+                boss.x += boss.speed * boss.dir;
+                if (boss.x < 0 || boss.x + boss.w > canvas.width) {
+                    boss.dir *= -1;
+                }
+                bossHealth.style.width = (boss.health / boss.maxHealth * 100) + '%';
+
+                // Colisiones de balas del jugador con el jefe
+                bullets.forEach((b, i) => {
+                    if (b.x < boss.x + boss.w && b.x + b.w > boss.x && b.y < boss.y + boss.h && b.y + b.h > boss.y) {
+                        boss.health -= 5; // Daño al jefe
+                        bullets.splice(i, 1);
+                        createExplosion(b.x, b.y, '#fff', 3);
+                        if (boss.health <= 0) {
+                            createExplosion(boss.x + boss.w/2, boss.y + boss.h/2, '#f00', 200);
+                            bossHealthBar.style.display = 'none';
+                            nextLevel(); // Victoria del nivel 3
+                        }
+                    }
+                });
+                // Colisiones de proyectiles del jefe con el jugador (simplificado, solo explosión)
+                bossProjectiles.forEach((bp, i) => {
+                    bp.y += bp.speed;
+                    if (bp.x < player.x + player.w && bp.x + bp.w > player.x && bp.y < player.y + player.h && bp.y + bp.h > player.y) {
+                        explode(); // Si el jefe te golpea, GAME OVER
+                    }
+                    if (bp.y > canvas.height) bossProjectiles.splice(i, 1);
+                });
+            }
+
+
+            bullets.forEach((b, i) => { b.y -= b.speed; if(b.y < 0) bullets.splice(i, 1); });
+            
+            enemies.forEach((en, i) => {
+                en.y += en.speed;
+                if (en.y > canvas.height) explode(); 
+
+                bullets.forEach((b, bi) => {
+                    if (b.x < en.x + en.w && b.x + b.w > en.x && b.y < en.y + en.h && b.y + b.h > en.y) {
+                        createExplosion(en.x, en.y, '#f00', 5);
+                        enemies.splice(i, 1);
+                        bullets.splice(bi, 1);
+                        score++;
+                        document.getElementById('score').innerText = score;
+                        if(score >= config[level-1].target && level < 3) nextLevel();
+                    }
+                });
+            });
+
+            particles.forEach((p, i) => {
+                p.x += p.vx; p.y += p.vy; p.size *= 0.92;
+                if(p.size < 0.5) particles.splice(i, 1);
+            });
+
+            powerUps.forEach((p, i) => {
+                p.y += p.speed;
+                if (p.x < player.x + player.w && p.x + p.w > player.x && p.y < player.y + player.h && p.y + p.h > player.y) {
+                    powerUps.splice(i, 1);
+                    powerUpActive = true;
+                    playSound(1200, 'sine', 0.2);
+                    setTimeout(() => powerUpActive = false, 6000);
+                }
+            });
+        }
+
+        function draw() {
+            ctx.fillStyle = 'rgba(0,0,10,0.4)'; 
+            ctx.fillRect(0,0,canvas.width, canvas.height);
+            if(gameOver) return;
+
+            // Jugador
+            ctx.fillStyle = '#0f0';
+            ctx.fillRect(player.x, player.y, player.w, player.h);
+
+            // Balas del jugador
+            ctx.fillStyle = powerUpActive ? '#0ff' : '#fff';
+            bullets.forEach(b => ctx.fillRect(b.x, b.y, b.w, b.h));
+
+            // Enemigos
+            ctx.fillStyle = '#f00';
+            enemies.forEach(en => ctx.fillRect(en.x, en.y, en.w, en.h));
+
+            // Jefe
+            if (boss && boss.health > 0) {
+                ctx.fillStyle = '#c0c'; // Color del jefe (morado)
+                ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+                // Proyectiles del jefe
+                ctx.fillStyle = '#ff0'; // Amarillos
+                bossProjectiles.forEach(bp => ctx.fillRect(bp.x, bp.y, bp.w, bp.h));
+            }
+
+            // Partículas de explosiones
+            particles.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+            });
+
+            // PowerUps
+            ctx.fillStyle = '#ff0';
+            powerUps.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x+10, p.y+10, 8, 0, Math.PI*2);
+                ctx.fill();
+            });
+
+            update();
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>
